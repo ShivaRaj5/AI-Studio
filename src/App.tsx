@@ -39,6 +39,7 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [retryCount, setRetryCount] = useState(0)
   const [isProcessingFile, setIsProcessingFile] = useState(false)
+  const [loadedImages, setLoadedImages] = useState<Set<string>>(new Set())
   
   const abortControllerRef = useRef<AbortController | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -121,8 +122,48 @@ function App() {
     }
   }, [downscaleImage])
 
+  const createMockGeneratedImage = useCallback(async (imageDataUrl: string, style: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')!
+      const img = new Image()
+      
+      img.onload = () => {
+        // Set canvas size
+        canvas.width = 512
+        canvas.height = 512
+        
+        // Draw the original image, maintaining aspect ratio
+        const scale = Math.min(512 / img.width, 512 / img.height)
+        const scaledWidth = img.width * scale
+        const scaledHeight = img.height * scale
+        const x = (512 - scaledWidth) / 2
+        const y = (512 - scaledHeight) / 2
+        
+        ctx.drawImage(img, x, y, scaledWidth, scaledHeight)
+        
+        // Apply style-specific effects
+        if (style === 'vintage') {
+          // Add vintage sepia effect
+          ctx.fillStyle = 'rgba(112, 66, 20, 0.3)'
+          ctx.fillRect(0, 0, 512, 512)
+        } else if (style === 'artistic') {
+          // Add artistic contrast
+          ctx.filter = 'contrast(1.2) saturate(1.3)'
+        } else if (style === 'minimalist') {
+          // Add minimalist desaturation
+          ctx.filter = 'grayscale(0.7) brightness(1.1)'
+        }
+        
+        resolve(canvas.toDataURL('image/jpeg', 0.9))
+      }
+      
+      img.src = imageDataUrl
+    })
+  }, [])
+
   const mockApiCall = useCallback(async (
-    _imageDataUrl: string, 
+    imageDataUrl: string, 
     prompt: string, 
     style: string,
     signal: AbortSignal
@@ -141,10 +182,13 @@ function App() {
       throw error
     }
 
+    // Create a mock generated image by applying a simple filter to the original
+    const mockGeneratedImageUrl = await createMockGeneratedImage(imageDataUrl, style)
+
     // Generate mock response
     const mockResponse: MockApiResponse = {
       id: `gen_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      imageUrl: `https://picsum.photos/512/512?random=${Date.now()}`,
+      imageUrl: mockGeneratedImageUrl,
       prompt,
       style,
       createdAt: new Date().toISOString()
@@ -231,6 +275,14 @@ function App() {
     }
   }, [])
 
+  const formatFileSize = useCallback((bytes: number): string => {
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }, [])
+
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (event.key === 'Enter' && !isGenerating) {
       generateImage()
@@ -312,7 +364,7 @@ function App() {
                     </button>
                   </div>
                   <p className="text-sm text-gray-600">
-                    File: {selectedFile?.name} ({(selectedFile?.size || 0 / 1024 / 1024).toFixed(2)} MB)
+                    File: {selectedFile?.name} ({formatFileSize(selectedFile?.size || 0)})
                   </p>
                 </div>
               )}
@@ -429,11 +481,36 @@ function App() {
                       onClick={() => restoreFromHistory(generation)}
                       className="w-full text-left p-3 border border-gray-200 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
                     >
-                      <img
-                        src={generation.imageUrl}
-                        alt="Generated image"
-                        className="w-full h-24 object-cover rounded mb-2"
-                      />
+                      <div className="relative w-full h-24 mb-2 bg-gray-100 rounded overflow-hidden">
+                        <img
+                          src={generation.imageUrl}
+                          alt="Generated image"
+                          className="w-full h-full object-cover"
+                          onLoad={() => {
+                            setLoadedImages(prev => new Set(prev).add(generation.id))
+                          }}
+                          onError={(e) => {
+                            // Fallback to a placeholder if image fails to load
+                            const target = e.target as HTMLImageElement
+                            target.style.display = 'none'
+                            const parent = target.parentElement
+                            if (parent) {
+                              const placeholder = document.createElement('div')
+                              placeholder.className = 'w-full h-full flex items-center justify-center bg-gray-200 text-gray-500 text-xs'
+                              placeholder.textContent = 'Image Preview'
+                              parent.appendChild(placeholder)
+                            }
+                            // Mark as loaded even if it's an error
+                            setLoadedImages(prev => new Set(prev).add(generation.id))
+                          }}
+                        />
+                        {/* Loading indicator - hidden when image is loaded */}
+                        {!loadedImages.has(generation.id) && (
+                          <div className="absolute inset-0 bg-gray-100 flex items-center justify-center">
+                            <div className="w-6 h-6 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
+                          </div>
+                        )}
+                      </div>
                       <p className="text-sm text-gray-900 font-medium line-clamp-2 mb-1">
                         {generation.prompt}
                       </p>
